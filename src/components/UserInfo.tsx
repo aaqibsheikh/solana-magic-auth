@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
+import {
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  Transaction,
+  SystemProgram,
+  Keypair
+} from "@solana/web3.js";
+
 import { LoginProps } from "../utils/types";
 import { logout } from "../utils/common";
 import { useMagic } from "./MagicProvider";
 import Spinner from "../components/ui/Spinner";
 import { getNetworkName } from "../utils/network";
 import RefreshIcon from "../assets/icons/refresh.svg";
-import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { checkIn } from "../solana";
 import showToast from "../utils/showToast";
 
@@ -17,6 +24,7 @@ const UserInfo = ({ token, setToken }: LoginProps) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [email, setEmail] = useState("");
   const [status, setCheckInStatus] = useState("");
+  const [airdropLoading, setAirdropLoading] = useState(false);
 
   const [publicAddress, setPublicAddress] = useState(
     localStorage.getItem("user")
@@ -90,19 +98,97 @@ const UserInfo = ({ token, setToken }: LoginProps) => {
 
   const checkInUserHandler = async () => {
     const publicAddress = localStorage.getItem("user");
-    if (publicAddress) {
-      const checkInnStatus = await checkIn(publicAddress);
-      setCheckInStatus(checkInnStatus);
-    } else {
-      showToast({ message: "Public address not found", type: "error" });
+    if (!publicAddress || !magic || !connection) {
+      showToast({
+        message:
+          "Public address not found or Magic/Connection not initialized.",
+        type: "error"
+      });
+      return;
+    }
+
+    try {
+      const userPublicKey = new PublicKey(publicAddress);
+      const recipientPubkey = Keypair.generate().publicKey;
+      const blockhash = await connection.getLatestBlockhash();
+      if (!blockhash) return;
+
+      const transaction = new Transaction({
+        ...blockhash,
+        feePayer: userPublicKey
+      });
+
+      const transferIx = SystemProgram.transfer({
+        fromPubkey: userPublicKey,
+        toPubkey: recipientPubkey,
+        lamports: 0.01 * LAMPORTS_PER_SOL
+      });
+
+      transaction.add(transferIx);
+
+      const signedTransaction = await magic.solana.signTransaction(
+        transaction,
+        {
+          requireAllSignatures: false,
+          verifySignatures: true
+        }
+      );
+
+      const signature = await connection.sendRawTransaction(
+        Buffer.from(signedTransaction.rawTransaction as string, "base64")
+      );
+
+      console.log("Transaction Signature:", signature);
+
+      setCheckInStatus(signature);
+    } catch (e) {
+      console.error("Error during transaction:", e);
+      showToast({ message: "Transaction failed", type: "error" });
     }
   };
+
+  const handleAirdrop = useCallback(async () => {
+    if (!publicAddress || !connection) {
+      showToast({
+        message: "Public address not found or connection not established",
+        type: "error"
+      });
+      return;
+    }
+
+    try {
+      setAirdropLoading(true);
+      const airdropSignature = await connection.requestAirdrop(
+        new PublicKey(publicAddress),
+        2 * LAMPORTS_PER_SOL
+      );
+      await connection.confirmTransaction(airdropSignature);
+      setAirdropLoading(false);
+      showToast({ message: "Airdropped 2 SOL!", type: "success" });
+    } catch (e) {
+      setAirdropLoading(false);
+      console.error("Airdrop failed:", e);
+      showToast({
+        message: "Airdrop failed. See console for details.",
+        type: "error"
+      });
+    }
+  }, [connection, publicAddress]);
 
   return (
     <div>
       <div className="flex items-center justify-between">
-        <div className="font-medium text-lg">
-          Connected to {getNetworkName()}
+        <div className="flex items-center space-x-5">
+          <div className="font-medium text-lg">
+            Connected to {getNetworkName()}
+          </div>
+          <button
+            className="px-5 py-1.5 bg-indigo-700 text-white rounded-md"
+            onClick={handleAirdrop}
+            disabled={airdropLoading}
+          >
+            {airdropLoading ? "Airdropping..." : "Airdrop 2 SOL"}
+          </button>
         </div>
 
         <div className="flex items-center justify-end space-x-3">
@@ -142,18 +228,18 @@ const UserInfo = ({ token, setToken }: LoginProps) => {
       <div className="mt-10">
         <div className="flex flex-col space-y-5">
           <p className="font-medium text-base">
-            <span className="font-bold text-base">Email:</span> {" "}
+            <span className="font-bold text-base">Email:</span>{" "}
             {email?.length == 0 ? "Fetching email.." : email}
-
           </p>
           <p className="font-medium text-base">
-            <span className="font-bold text-base">Wallet:</span> {" "}
+            <span className="font-bold text-base">Wallet:</span>{" "}
             {publicAddress?.length == 0 ? "Fetching address.." : publicAddress}
           </p>
         </div>
+
         <div className="flex flex-col mt-5 space-y-2">
           <p className="">
-            <span className="font-bold text-base">CheckIn Status:</span>{" "}
+            <span className="font-bold text-base">Txn Status:</span>{" "}
             {status ? status : "Null"}
           </p>
           <button
